@@ -16,6 +16,9 @@ This project analyzes dynamic compliance behavior among industrial facilities in
 
 - **Source**: [EPA ECHO Data](https://echo.epa.gov/tools/data-downloads)
 - **Scope**: Inspections, violations, enforcement actions, and metadata from U.S. facilities over time.
+https://echo.epa.gov/tools/data-downloads/demographic-download-summary 
+https://echo.epa.gov/tools/data-downloads/frs-download-summary 
+https://echo.epa.gov/tools/data-downloads/icis-air-download-summary 
 
 ## Methodology
 
