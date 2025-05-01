@@ -31,6 +31,7 @@ This project analyzes dynamic compliance behavior among industrial facilities in
 - **Behavioral Clustering Across Facilities**
 
 ## Project Structure
+```
   echorisk/ │
             ├── data/ # Cleaned and raw data 
             ├── notebooks/ # Exploratory and modeling notebooks 
@@ -39,7 +40,7 @@ This project analyzes dynamic compliance behavior among industrial facilities in
             ├── results/ # Forecasts and visualizations 
             ├── README.md 
             └── proposal.md # Project concept + methodology
-
+```
 
 ## Status
 
