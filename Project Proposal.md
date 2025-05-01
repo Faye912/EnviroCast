@@ -5,13 +5,13 @@ Environmental enforcement policies shape how industrial facilities respond to in
 
 ## Research Objectives
 - Forecast environmental violation risk at the facility level.
-- 
+  
 - Detect strategic noncompliance timing (e.g., behavior shifts around inspection windows).
-- 
+  
 - Identify policy reaction effects (e.g., compliance changes after new rules).
-- 
+  
 - Analyze violation type transitions over time.
-- 
+  
 - Discover behavioral clusters across facilities with shared characteristics (industry, ownership, region).
 
 ## Approach
