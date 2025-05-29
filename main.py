@@ -7,13 +7,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
-from fairlearn.metrics import (
-    MetricFrame,
-    demographic_parity_difference,
-    equalized_odds_difference,
-    false_positive_rate,
-    true_positive_rate
-)
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -25,7 +18,7 @@ demo_df = pd.read_csv("ECHO_DEMOGRAPHICS.csv", dtype=str)
 icis_air = pd.read_csv("ICIS-AIR_FACILITIES.csv", dtype=str)
 
 # Keep only relevant ICIS-Air columns
-icis_air = icis_air[['REGISTRY_ID', 'CURRENT_HPV', 'AIR_POLLUTANT_CLASS_DESC', 'AIR_OPERATING_STATUS_DESC']]
+icis_air = icis_air[['PGM_SYS_ID','REGISTRY_ID', 'CURRENT_HPV', 'AIR_POLLUTANT_CLASS_DESC', 'AIR_OPERATING_STATUS_DESC']]
 
 #%%
 # Define binary violation label based on CURRENT_HPV
@@ -115,52 +108,6 @@ def equal_opportunity_gap(y_true, preds, group):
     tpr1 = preds[mask1].mean() if mask1.any() else torch.tensor(0.0)
     tpr0 = preds[mask0].mean() if mask0.any() else torch.tensor(0.0)
     return (tpr1 - tpr0) ** 2
-
-#%%
-best_lambda = None
-best_acc = 0
-results = []
-
-# Training loop
-for lambda_dp in [0, 0.1, 0.5, 1.0, 5.0]:
-    lambda_eo = 1.0  # fix EO penalty for now
-    optimizer = optim.Adam(model.parameters(), lr=0.01)
-    loss_fn = nn.BCEWithLogitsLoss()
-
-    for epoch in range(100):
-        model.train()
-        logits = model(X_torch)
-        probs = torch.sigmoid(logits)
-
-        loss_pred = loss_fn(logits, y_torch)
-        loss_dp = demographic_parity_gap(probs, group_minority)
-        loss_eo = equal_opportunity_gap(y_torch, probs, group_low_income)
-
-        total_loss = loss_pred + lambda_dp * loss_dp + lambda_eo * loss_eo
-
-        optimizer.zero_grad()
-        total_loss.backward()
-        optimizer.step()
-
-        model.eval()
-        with torch.no_grad():
-            test_preds = torch.sigmoid(model(torch.tensor(X_test_torch, dtype=torch.float32)))
-            test_preds_bin = (test_preds > 0.5).float().numpy()
-            acc = accuracy_score(y_test, test_preds_bin)
-            results.append((lambda_dp, acc))
-            if acc > best_acc:
-                best_acc = acc
-                best_lambda = lambda_dp
-                
-                
-# Show results
-print("\n=== Grid Search Results ===")
-for res in results:
-    print(
-        f"λ_min={res['lambda_dp']} "
-        f"Acc={res['acc']:.4f} "
-    )
-
 #%%
 lambda_grid = [(0,1), (0.1, 0.1), (1,0.01), (0.05, 0.1), (0.25, 0.5)]
 
@@ -209,5 +156,241 @@ for lambda_min, lambda_low in lambda_grid:
         })
 
 #%%
+# merge ICIS-Air facilities with violation history
+icis_air_violations = pd.read_csv("ICIS-AIR_VIOLATION_HISTORY.csv", dtype=str)
 
 #%%
+icis_violations_merged = pd.merge(
+    icis_air,  # contains REGISTRY_ID and PGM_SYS_ID
+    icis_air_violations,  # contains PGM_SYS_ID
+    on='PGM_SYS_ID', how='left'
+)
+
+#%%
+# Step 2: Merge the result with your main facility-demographics data
+full_merged = pd.merge(
+    merged,        # your current training dataset
+    icis_violations_merged,  # includes REGISTRY_ID and violation history
+    on='REGISTRY_ID', how='left')
+
+#%%
+columns_to_keep = [
+    'REGISTRY_ID', 'PGM_SYS_ID_x', 'FAC_STATE', 'FAC_COUNTY',
+    'LATITUDE_MEASURE', 'LONGITUDE_MEASURE',
+    'LOWINCOME', 'MINORITY_POPULATION', 'pct_low_income', 'pct_minority',
+    'high_minority', 'low_income',
+    'CURRENT_HPV_x', 'AIR_POLLUTANT_CLASS_DESC_x', 'AIR_OPERATING_STATUS_DESC_x',
+    'has_hpv_x', 'POLLUTANT_DESCS',
+    'EARLIEST_FRV_DETERM_DATE', 'HPV_DAYZERO_DATE', 'HPV_RESOLVED_DATE'
+]
+
+final_df = full_merged[columns_to_keep].copy()
+# %%
+date_cols = [
+    'EARLIEST_FRV_DETERM_DATE',
+    'HPV_DAYZERO_DATE',
+    'HPV_RESOLVED_DATE'
+]
+
+for col in date_cols:
+    final_df[col] = pd.to_datetime(final_df[col], errors='coerce')
+
+#%%
+# create temporal features
+from datetime import datetime
+#%%
+# days from violation to now
+today = pd.to_datetime("today")
+final_df['HPV_DAYZERO_DATE'] = pd.to_datetime(final_df['HPV_DAYZERO_DATE'], errors='coerce')
+final_df['days_since_dayzero'] = (today - final_df['HPV_DAYZERO_DATE']).dt.days
+#%%
+# duration of violation
+final_df['HPV_RESOLVED_DATE'] = pd.to_datetime(final_df['HPV_RESOLVED_DATE'], errors='coerce')
+final_df['violation_duration'] = (
+    final_df['HPV_RESOLVED_DATE'] - final_df['HPV_DAYZERO_DATE']
+).dt.days
+#%%
+# time gaps between events
+final_df['EARLIEST_FRV_DETERM_DATE'] = pd.to_datetime(final_df['EARLIEST_FRV_DETERM_DATE'], errors='coerce')
+
+final_df['days_to_resolution'] = (
+    final_df['HPV_RESOLVED_DATE'] - final_df['EARLIEST_FRV_DETERM_DATE']
+).dt.days
+
+
+#%%
+final_df['has_dayzero'] = final_df['HPV_DAYZERO_DATE'].notna().astype(int)
+final_df['has_resolved'] = final_df['HPV_RESOLVED_DATE'].notna().astype(int)
+
+#%%
+# impute missing values
+temporal_cols = [
+    'days_since_dayzero',
+    'violation_duration',
+    'days_to_resolution'
+]
+
+# Fill missing with -1 (or use median if you prefer)
+final_df[temporal_cols] = final_df[temporal_cols].fillna(-1)
+
+# %%
+# combine existing features and temporal features
+X = pd.concat([X, temporal_cols], axis=1)
+
+#%%
+from sklearn.model_selection import train_test_split
+
+#%% train-test split and model training
+X_train, X_test, y_train, y_test, sens_train, sens_test = train_test_split(
+    X, y, sensitive_features, test_size=0.3, random_state=42)
+
+# scale and convert data
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+# convert to torch tensors
+X_torch = torch.tensor(X_train_scaled, dtype=torch.float32)
+y_torch = torch.tensor(y_train.values, dtype=torch.float32).view(-1, 1)
+
+X_test_torch = torch.tensor(X_test_scaled, dtype=torch.float32)
+y_test_torch = torch.tensor(y_test.values, dtype=torch.float32).view(-1, 1)
+
+#%%
+input_dim = X_torch.shape[1]
+
+model = LogisticRegressionFair(input_dim) 
+#%%
+lambda_grid = [(0,1), (0.1, 0.1), (1,0.01), (0.05, 0.1), (0.25, 0.5)]
+
+results = []
+
+for lambda_min, lambda_low in lambda_grid:
+    print(f"\nTraining with λ_minority={lambda_min}, λ_low_income={lambda_low}")
+
+    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    bce_loss = nn.BCELoss()
+
+    for epoch in range(1000):
+        model.train()
+        optimizer.zero_grad()
+        y_pred = model(X_torch)
+
+        loss_pred = bce_loss(y_pred, y_torch)
+
+        # Demographic parity penalties
+        minority_gap = (y_pred[group_minority == 1].mean() - y_pred[group_minority == 0].mean()) ** 2
+        low_income_gap = (y_pred[group_low_income == 1].mean() - y_pred[group_low_income == 0].mean()) ** 2
+
+        fairness_penalty = lambda_min * minority_gap + lambda_low * low_income_gap
+        total_loss = loss_pred + fairness_penalty
+
+        total_loss.backward()
+        optimizer.step()
+
+    # Evaluation
+    model.eval()
+    with torch.no_grad():
+        y_test_pred = model(X_test_torch)
+        y_test_bin = (y_test_pred > 0.5).float()
+
+        acc = accuracy_score(y_test_torch.numpy(), y_test_bin.numpy())
+
+        dp_gap_min = abs(y_test_pred[group_minority_test == 1].mean().item() - y_test_pred[group_minority_test == 0].mean().item())
+        dp_gap_low = abs(y_test_pred[group_low_income_test == 1].mean().item() - y_test_pred[group_low_income_test == 0].mean().item())
+
+        results.append({
+            'lambda_minority': lambda_min,
+            'lambda_low_income': lambda_low,
+            'accuracy': acc,
+            'dp_gap_minority': dp_gap_min,
+            'dp_gap_low_income': dp_gap_low
+        })
+
+# %%
+# CLASS IMBALANCE!!
+y.value_counts(normalize=True)
+
+# %%
+class LogisticRegressionFair(nn.Module):
+    def __init__(self, input_dim):
+        super().__init__()
+        self.linear = nn.Linear(input_dim, 1)
+
+    def forward(self, x):
+        return self.linear(x)  
+
+#%%
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+
+bce_results = []
+
+# Compute pos_weight for class imbalance
+pos_weight = torch.tensor([y_torch.eq(0).sum() / y_torch.eq(1).sum()]).float().to(X_torch.device)
+
+for lambda_min, lambda_low in lambda_grid:
+    print(f"\nTraining with λ_minority={lambda_min}, λ_low_income={lambda_low}")
+
+    model = LogisticRegressionFair(X_torch.shape[1]).to(X_torch.device)
+    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    for epoch in range(1000):
+        model.train()
+        optimizer.zero_grad()
+        
+        logits = model(X_torch)
+        y_pred_probs = torch.sigmoid(logits)  # needed for fairness penalties
+        
+        loss_pred = loss_fn(logits, y_torch)
+
+        # Fairness penalties (demographic parity)
+        minority_gap = (y_pred_probs[group_minority == 1].mean() - y_pred_probs[group_minority == 0].mean()) ** 2
+        low_income_gap = (y_pred_probs[group_low_income == 1].mean() - y_pred_probs[group_low_income == 0].mean()) ** 2
+
+        fairness_penalty = lambda_min * minority_gap + lambda_low * low_income_gap
+        total_loss = loss_pred + fairness_penalty
+
+        total_loss.backward()
+        optimizer.step()
+
+    # Evaluation
+    model.eval()
+    with torch.no_grad():
+        logits_test = model(X_test_torch)
+        probs_test = torch.sigmoid(logits_test)
+        preds_test = (probs_test > 0.5).float()
+
+        acc = accuracy_score(y_test_torch.cpu(), preds_test.cpu())
+        precision = precision_score(y_test_torch.cpu(), preds_test.cpu(), zero_division=0)
+        recall = recall_score(y_test_torch.cpu(), preds_test.cpu(), zero_division=0)
+        f1 = f1_score(y_test_torch.cpu(), preds_test.cpu(), zero_division=0)
+        auc = roc_auc_score(y_test_torch.cpu(), probs_test.cpu())
+
+        dp_gap_min = abs(probs_test[group_minority_test == 1].mean().item() - probs_test[group_minority_test == 0].mean().item())
+        dp_gap_low = abs(probs_test[group_low_income_test == 1].mean().item() - probs_test[group_low_income_test == 0].mean().item())
+
+        bce_results.append({
+            'lambda_minority': lambda_min,
+            'lambda_low_income': lambda_low,
+            'accuracy': acc,
+            'precision': precision,
+            'recall': recall,
+            'f1_score': f1,
+            'auc_roc': auc,
+            'dp_gap_minority': dp_gap_min,
+            'dp_gap_low_income': dp_gap_low
+        })
+# %%
+from sklearn.metrics import precision_recall_curve
+
+probs = model(X_test)
+precision, recall, thresholds = precision_recall_curve(y_test, probs)
+
+# Plot or find the best threshold
+best_f1_idx = np.argmax(2 * precision * recall / (precision + recall))
+best_threshold = thresholds[best_f1_idx]
+
+
+# %%
+
