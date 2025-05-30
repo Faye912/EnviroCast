@@ -379,18 +379,183 @@ for lambda_min, lambda_low in lambda_grid:
             'f1_score': f1,
             'auc_roc': auc,
             'dp_gap_minority': dp_gap_min,
-            'dp_gap_low_income': dp_gap_low
+            'dp_gap_low_income': dp_gap_low,
+            'y_probs': probs_test
         })
 # %%
 from sklearn.metrics import precision_recall_curve
+import matplotlib.pyplot as plt
 
-probs = model(X_test)
-precision, recall, thresholds = precision_recall_curve(y_test, probs)
+plt.figure(figsize=(10, 6))
 
-# Plot or find the best threshold
-best_f1_idx = np.argmax(2 * precision * recall / (precision + recall))
-best_threshold = thresholds[best_f1_idx]
+for result in bce_results:
+    y_probs = result['y_probs']
+    
+    precision, recall, thresholds = precision_recall_curve(y_test, y_probs)
+    
+    recall = recall[recall > 0]
+    precision = precision[-len(recall):]
+    
+    label = f"λ_min={result['lambda_minority']}, λ_low={result['lambda_low_income']}"
+    plt.plot(recall, precision, label=label)
+
+plt.xlabel("Recall")
+plt.ylabel("Precision")
+plt.title("Precision-Recall Curves for Different Fairness Weights")
+plt.legend(loc="lower left", fontsize="small")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# %%
+from sklearn.metrics import precision_recall_curve, f1_score
+import numpy as np
+
+precision, recall, thresholds = precision_recall_curve(y_test, y_probs)
+
+# Compute F1 for each threshold
+f1_scores = 2 * (precision * recall) / (precision + recall + 1e-8)
+
+# Find threshold that maximizes F1
+best_index = np.argmax(f1_scores)
+best_threshold = thresholds[best_index]
+best_f1 = f1_scores[best_index]
+
+print(f"Best threshold: {best_threshold:.4f} with F1 score: {best_f1:.4f}")
 
 
 # %%
+# RETRAINING after adjusting evaluation metrics using best threshold
+retrain_results = []
+
+# Compute pos_weight for class imbalance
+pos_weight = torch.tensor([y_torch.eq(0).sum() / y_torch.eq(1).sum()]).float().to(X_torch.device)
+
+for lambda_min, lambda_low in lambda_grid:
+    print(f"\nTraining with λ_minority={lambda_min}, λ_low_income={lambda_low}")
+
+    model = LogisticRegressionFair(X_torch.shape[1]).to(X_torch.device)
+    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    for epoch in range(1000):
+        model.train()
+        optimizer.zero_grad()
+        
+        logits = model(X_torch)
+        y_pred_probs = torch.sigmoid(logits)  # needed for fairness penalties
+        
+        loss_pred = loss_fn(logits, y_torch)
+
+        # Fairness penalties (demographic parity)
+        minority_gap = (y_pred_probs[group_minority == 1].mean() - y_pred_probs[group_minority == 0].mean()) ** 2
+        low_income_gap = (y_pred_probs[group_low_income == 1].mean() - y_pred_probs[group_low_income == 0].mean()) ** 2
+
+        fairness_penalty = lambda_min * minority_gap + lambda_low * low_income_gap
+        total_loss = loss_pred + fairness_penalty
+
+        total_loss.backward()
+        optimizer.step()
+
+    # Evaluation
+    model.eval()
+    with torch.no_grad():
+        logits_test = model(X_test_torch)
+        probs_test = torch.sigmoid(logits_test)
+        preds_test_adjusted = (probs_test >= 0.4).float()
+
+        acc = accuracy_score(y_test_torch.cpu(), preds_test_adjusted.cpu())
+        precision = precision_score(y_test_torch.cpu(), preds_test_adjusted.cpu(), zero_division=0)
+        recall = recall_score(y_test_torch.cpu(), preds_test_adjusted.cpu(), zero_division=0)
+        f1 = f1_score(y_test_torch.cpu(), preds_test_adjusted.cpu(), zero_division=0)
+        auc = roc_auc_score(y_test_torch.cpu(), probs_test.cpu())
+
+        dp_gap_min = abs(probs_test[group_minority_test == 1].mean().item() - probs_test[group_minority_test == 0].mean().item())
+        dp_gap_low = abs(probs_test[group_low_income_test == 1].mean().item() - probs_test[group_low_income_test == 0].mean().item())
+
+        retrain_results.append({
+            'lambda_minority': lambda_min,
+            'lambda_low_income': lambda_low,
+            'accuracy': acc,
+            'precision': precision,
+            'recall': recall,
+            'f1_score': f1,
+            'auc_roc': auc,
+            'dp_gap_minority': dp_gap_min,
+            'dp_gap_low_income': dp_gap_low,
+            'y_probs': probs_test
+        })
+# %%
+# checking if there are differentiated predicted probabilities
+unique_probs = np.unique(y_probs)
+print(f"Unique probs: {len(unique_probs)}")
+# %%
+# checking for a spike at predicted prob around 0.2
+import matplotlib.pyplot as plt
+plt.hist(y_probs, bins=50)
+plt.title("Histogram of predicted probabilities")
+plt.show()
+
+# %%
+# baseline model without sensitive features
+baseline = []
+model = LogisticRegressionFair(X_torch.shape[1]).to(X_torch.device)
+optimizer = optim.Adam(model.parameters(), lr=0.01)
+loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+for epoch in range(1000):
+    model.train()
+    optimizer.zero_grad()
+    
+    logits = model(X_torch)
+    y_pred_probs = torch.sigmoid(logits)  # needed for fairness penalties
+    
+    loss_pred = loss_fn(logits, y_torch)
+
+    # Fairness penalties (demographic parity)
+    minority_gap = (y_pred_probs[group_minority == 1].mean() - y_pred_probs[group_minority == 0].mean()) ** 2
+    low_income_gap = (y_pred_probs[group_low_income == 1].mean() - y_pred_probs[group_low_income == 0].mean()) ** 2
+
+    fairness_penalty = lambda_min * minority_gap + lambda_low * low_income_gap
+    total_loss = loss_pred + fairness_penalty
+
+    total_loss.backward()
+    optimizer.step()
+
+# Evaluation
+model.eval()
+with torch.no_grad():
+    logits_test = model(X_test_torch)
+    probs_test = torch.sigmoid(logits_test)
+    preds_test = (probs_test > 0.5).float()
+
+    acc = accuracy_score(y_test_torch.cpu(), preds_test.cpu())
+    precision = precision_score(y_test_torch.cpu(), preds_test.cpu(), zero_division=0)
+    recall = recall_score(y_test_torch.cpu(), preds_test.cpu(), zero_division=0)
+    f1 = f1_score(y_test_torch.cpu(), preds_test.cpu(), zero_division=0)
+    auc = roc_auc_score(y_test_torch.cpu(), probs_test.cpu())
+
+    dp_gap_min = abs(probs_test[group_minority_test == 1].mean().item() - probs_test[group_minority_test == 0].mean().item())
+    dp_gap_low = abs(probs_test[group_low_income_test == 1].mean().item() - probs_test[group_low_income_test == 0].mean().item())
+
+    baseline.append({
+        'lambda_minority': 0,
+        'lambda_low_income': 0,
+        'accuracy': acc,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1,
+        'auc_roc': auc,
+        'dp_gap_minority': dp_gap_min,
+        'dp_gap_low_income': dp_gap_low,
+        'y_probs': probs_test
+    })
+
+# %%
+# logits distribution
+plt.hist(logits.detach().cpu().numpy(), bins=50)
+plt.title("Logits distribution (before sigmoid)")
+plt.show()
+
+#%%
 
