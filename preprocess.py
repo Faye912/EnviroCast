@@ -15,7 +15,7 @@ violation_data = violation_data.merge(
     how="left"
 )
 
-case_df = enforcement_data.merge(facility_data, on="ACTIVITY_ID", how="left")  # adds REGISTRY_ID
+case_df = violation_data.merge(facility_data, on="ACTIVITY_ID", how="left")  # adds REGISTRY_ID
 
 #%%
 # set start time as inspection start date
@@ -25,14 +25,13 @@ import pandas as pd
 inspection_data["ACTUAL_BEGIN_DATE"] = pd.to_datetime(
     inspection_data["ACTUAL_BEGIN_DATE"], errors="coerce"
 )
+# # Step 2: Clean and standardize REGISTRY_IDs in both dataframes
+# def clean_registry_id(df, col="REGISTRY_ID"):
+#     df[col] = df[col].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+#     return df
 
-# Step 2: Clean and standardize REGISTRY_IDs in both dataframes
-def clean_registry_id(df, col="REGISTRY_ID"):
-    df[col] = df[col].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-    return df
-
-case_df = clean_registry_id(case_df, "REGISTRY_ID")
-inspection_data = clean_registry_id(inspection_data, "REGISTRY_ID")
+# case_df = clean_registry_id(case_df, "REGISTRY_ID")
+# inspection_data = clean_registry_id(inspection_data, "REGISTRY_ID")
 
 # Step 3: Extract earliest inspection date per facility
 inspection_dates = (
@@ -41,16 +40,19 @@ inspection_dates = (
     .min()
     .rename(columns={"ACTUAL_BEGIN_DATE": "start_time"})
 )
-
+#%%
 # Step 4: Merge inspection start_time into case_df
 case_df = case_df.merge(inspection_dates, on="REGISTRY_ID", how="left")
+case_df = case_df.dropna(subset=["start_time"])
 
-# Step 5: Check results
-print("Missing start_time values:", case_df["start_time"].isna().sum())
-print("Sample start times:\n", case_df["start_time"].dropna().head())
 #%%
 # Define Event Time and Event Observed Indicator
 case_df["event_time"] = case_df["ACTIVITY_STATUS_DATE"]
+case_df = case_df.dropna(subset=["event_time"])
+
+#%%
+case_df = case_df.merge(enforcement_data,
+    on="ACTIVITY_ID")
 
 #%%
 # Consider 'Closed' with non-null ENF_OUTCOME_DESC as an observed event
