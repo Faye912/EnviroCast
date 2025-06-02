@@ -10,7 +10,6 @@ from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-
 #%%
 # load datasets
 frs_df = pd.read_csv("FRS_FACILITIES.csv", dtype=str)

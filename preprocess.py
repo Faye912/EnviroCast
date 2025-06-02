@@ -61,19 +61,13 @@ case_df["event_observed"] = ((case_df["ACTIVITY_STATUS_DESC"] == "Closed") &
 
 # %%
 case_df.to_csv("case_data.csv", index=False)
+
 # %%
 # drop missing rows and weird values
 survival_df = case_df.dropna(subset=["start_time", "event_time", "REGISTRY_ID"]).copy()
 #%%
 # added feature columns
 import numpy as np
-# Penalty amount (log-transformed optional)
-survival_df["log_penalty_amt"] = survival_df["TOTAL_PENALTY_ASSESSED_AMT"].apply(lambda x: np.log1p(x) if pd.notnull(x) else 0)
-
-# Voluntary self-disclosure flag
-survival_df["voluntary_flag"] = survival_df["VOLUNTARY_SELF_DISCLOSURE_FLAG"].map({"Y": 1, "N": 0})
-
-#%%
 # Penalty amount (log-transformed optional)
 survival_df["log_penalty_amt"] = survival_df["TOTAL_PENALTY_ASSESSED_AMT"].apply(lambda x: np.log1p(x) if pd.notnull(x) else 0)
 
@@ -90,3 +84,31 @@ final_df = survival_df[[
 final_df["duration"] = (final_df["event_time"] - final_df["start_time"]).dt.days
 
 #%%
+# ENGINEER FEATURES FOR MODELING
+# demographics data
+demo_data = pd.read_csv("ECHO_DEMOGRAPHICS.csv")
+# %%
+# create binary features for fairness loss analysis
+demo_data['pct_minority'] = (
+    demo_data['MINORITY_POPULATION'].astype(float) / demo_data['ACS_POPULATION'].astype(float) * 100
+)
+demo_data['pct_low_income'] = (
+    demo_data['LOWINCOME'].astype(float) / demo_data['ACS_POPULATION'].astype(float) * 100
+)
+demo_data['high_minority'] = (demo_data['pct_minority'] > 50).astype(int)
+demo_data['low_income'] = (demo_data['pct_low_income'] > 50).astype(int)
+
+
+# %%
+final_df['REGISTRY_ID'] = final_df['REGISTRY_ID'].astype(int)
+
+# %%
+final_df = final_df.merge(demo_data[['REGISTRY_ID',"pct_minority", "pct_low_income", "high_minority",	"low_income"]],
+                          on= "REGISTRY_ID",
+                          how="inner")
+
+# %%
+final_df.to_csv("final_df.csv", index=False)
+
+
+# %%
